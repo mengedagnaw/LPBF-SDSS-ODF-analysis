@@ -1,0 +1,280 @@
+%% run_all_ODF_hex_root_clean.m
+% Batch ODF phi2 sections for six SDSS 2507 hex EBSD .ang files
+% Assumes MTEX has already been initialized with startup_mtex.
+%
+% Root-level files expected:
+%   01_AS.ang
+%   02_SR400.ang
+%   03_SR450.ang
+%   04_SR500.ang
+%   05_SR550.ang
+%   06_SA1100.ang
+
+clearvars; close all; clc;
+
+thisFile = mfilename('fullpath');
+scriptDir = fileparts(thisFile);
+if ~isempty(thisFile)
+    cd(scriptDir);
+end
+
+jobs = { ...
+    'AS'    , '01_AS.ang'; ...
+    'SR400' , '02_SR400.ang'; ...
+    'SR450' , '03_SR450.ang'; ...
+    'SR500' , '04_SR500.ang'; ...
+    'SR550' , '05_SR550.ang'; ...
+    'SA1100', '06_SA1100.ang'};
+
+for i = 1:size(jobs,1)
+    condLabel = jobs{i,1};
+    angFile   = jobs{i,2};
+    runOneODF(scriptDir, condLabel, angFile);
+end
+
+disp('All six clean-layout ODF jobs finished.');
+
+%% =========================================================
+function runOneODF(scriptDir, condLabel, angFile)
+
+fname = resolveAngFile(scriptDir, angFile);
+
+outRoot = fullfile(scriptDir, 'SDSS_ODF_clean');
+outFig  = fullfile(outRoot, 'figures', condLabel);
+outScr  = fullfile(outRoot, 'scripts');
+
+if ~exist(outRoot,'dir'), mkdir(outRoot); end
+if ~exist(outFig,'dir'), mkdir(outFig); end
+if ~exist(outScr,'dir'), mkdir(outScr); end
+
+CS = { ...
+    'notIndexed', ...
+    crystalSymmetry('m-3m',[2.87 2.87 2.87], 'mineral','Ferrite',   'color','red'), ...
+    crystalSymmetry('m-3m',[3.60 3.60 3.60], 'mineral','Austenite', 'color','blue')};
+
+ebsd = EBSD.load(fname, CS, 'interface','ang', ...
+    'convertEuler2SpatialReferenceFrame','setting 2');
+
+ebsd = ebsd('indexed');
+
+[ebsdFerr, ebsdAust] = pickDuplexPhases(ebsd);
+
+% Fail early if MTEX state is bad
+try
+    oFerr = ebsdFerr.orientations; %#ok<NASGU>
+    oAust = ebsdAust.orientations; %#ok<NASGU>
+catch ME
+    error(['EBSD import succeeded, but orientation extraction failed. ', ...
+           'MTEX is likely not initialized cleanly in this session. Original message: ' ME.message]);
+end
+
+phi2Vals = [0 45 65] * degree;
+win      = [0 90];
+hw       = 10 * degree;
+res      = 10 * degree;
+
+% ---------------- Ferrite ODF ----------------
+odfFerr = calcDensity(ebsdFerr.orientations, ...
+    'halfwidth', hw, 'resolution', res);
+
+figFerr = figure('Name',[condLabel ' - Ferrite ODF phi2'], ...
+    'Color','w', 'Units','pixels', 'Position',[100 100 1500 1100]);
+
+plotSection(odfFerr, 'phi2', phi2Vals);
+cb = mtexColorbar;
+set(get(cb,'Label'),'String','MRD');
+
+finalizeODFFigure(figFerr, condLabel, 'Ferrite', win);
+
+exportgraphics(figFerr, ...
+    fullfile(outFig, [condLabel '_Ferrite_ODF_phi2_0_45_65_clean.png']), ...
+    'Resolution', 600);
+
+% ---------------- Austenite ODF ----------------
+odfAust = calcDensity(ebsdAust.orientations, ...
+    'halfwidth', hw, 'resolution', res);
+
+figAust = figure('Name',[condLabel ' - Austenite ODF phi2'], ...
+    'Color','w', 'Units','pixels', 'Position',[100 100 1500 1100]);
+
+plotSection(odfAust, 'phi2', phi2Vals);
+cb = mtexColorbar;
+set(get(cb,'Label'),'String','MRD');
+
+finalizeODFFigure(figAust, condLabel, 'Austenite', win);
+
+exportgraphics(figAust, ...
+    fullfile(outFig, [condLabel '_Austenite_ODF_phi2_0_45_65_clean.png']), ...
+    'Resolution', 600);
+
+try
+    copyfile(thisFilePathSafe(), fullfile(outScr, 'run_all_ODF_hex_root_clean.m'));
+catch ME
+    warning('Could not copy script: %s', ME.message);
+end
+
+disp(['Done: ' condLabel]);
+
+end
+
+%% =========================================================
+function [ebsdFerr, ebsdAust] = pickDuplexPhases(ebsd)
+
+ebsdFerr = [];
+ebsdAust = [];
+
+try
+    ebsdFerr = ebsd('Ferrite');
+end
+
+try
+    ebsdAust = ebsd('Austenite');
+end
+
+if isempty(ebsdFerr) || isempty(ebsdAust)
+    ph = cellstr(ebsd.mineralList);
+    ferrName = '';
+    austName = '';
+
+    for i = 1:numel(ph)
+        pli = lower(strtrim(ph{i}));
+
+        if isempty(ferrName) && contains(pli,'ferr')
+            ferrName = ph{i};
+        end
+
+        if isempty(austName) && (contains(pli,'aust') || contains(pli,'gamm'))
+            austName = ph{i};
+        end
+    end
+
+    if isempty(ebsdFerr) && ~isempty(ferrName)
+        ebsdFerr = ebsd(ferrName);
+    end
+
+    if isempty(ebsdAust) && ~isempty(austName)
+        ebsdAust = ebsd(austName);
+    end
+end
+
+if isempty(ebsdFerr) || isempty(ebsdAust)
+    error('Could not identify Ferrite and Austenite phases from the imported EBSD data.');
+end
+
+end
+
+%% =========================================================
+function finalizeODFFigure(figHandle, condLabel, phaseLabel, win)
+
+drawnow;
+
+axAll = findall(figHandle, 'Type', 'axes');
+isCB  = arrayfun(@(h) strcmp(get(h,'Tag'),'Colorbar'), axAll);
+axODF = axAll(~isCB);
+cb    = axAll(isCB);
+
+if numel(axODF) == 3
+    pos = zeros(3,4);
+    for i = 1:3
+        pos(i,:) = get(axODF(i), 'Position');
+    end
+
+    ctr = [pos(:,1)+0.5*pos(:,3), pos(:,2)+0.5*pos(:,4)];
+    [~, idx] = sortrows([-ctr(:,2), ctr(:,1)]);
+    axODF = axODF(idx);
+
+    targetPos = [ ...
+        0.08  0.56  0.32  0.32; ... % left-top
+        0.43  0.56  0.32  0.32; ... % right-top
+        0.255 0.15  0.32  0.32];    % bottom-center
+
+    for i = 1:3
+        set(axODF(i), ...
+            'Units','normalized', ...
+            'Position',targetPos(i,:), ...
+            'XLim',win, ...
+            'YLim',win, ...
+            'FontSize',16, ...
+            'LineWidth',1.0, ...
+            'Box','on');
+
+        axis(axODF(i), 'square');
+
+        t = get(axODF(i), 'Title');
+        if isgraphics(t)
+            t.String = '';
+        end
+
+        xl = get(axODF(i), 'XLabel');
+        yl = get(axODF(i), 'YLabel');
+
+        if isgraphics(xl)
+            set(xl, 'FontSize', 18, 'Interpreter', 'tex');
+        end
+        if isgraphics(yl)
+            set(yl, 'FontSize', 18, 'Interpreter', 'tex');
+        end
+    end
+end
+
+if ~isempty(cb)
+    cbar = cb(1);
+    set(cbar, ...
+        'Units','normalized', ...
+        'Position',[0.84 0.16 0.028 0.72], ...
+        'FontSize',16);
+
+    try
+        cbar.Label.String = 'MRD';
+        cbar.Label.FontSize = 18;
+        cbar.Label.FontWeight = 'bold';
+        cbar.Label.Interpreter = 'none';
+    catch
+    end
+end
+
+annotation(figHandle, 'textbox', [0.05 0.91 0.75 0.055], ...
+    'String', sprintf('%s - %s ODF (phi2 = 0, 45, 65 deg)', condLabel, phaseLabel), ...
+    'Interpreter', 'none', ...
+    'HorizontalAlignment', 'center', ...
+    'VerticalAlignment', 'middle', ...
+    'LineStyle', 'none', ...
+    'FontSize', 20, ...
+    'FontWeight', 'bold', ...
+    'Color', 'k');
+
+end
+
+%% =========================================================
+function fname = resolveAngFile(scriptDir, fileName)
+
+candidates = { ...
+    fullfile(scriptDir, fileName), ...
+    fullfile(fileparts(scriptDir), fileName), ...
+    fullfile(pwd, fileName)};
+
+for i = 1:numel(candidates)
+    if exist(candidates{i}, 'file') == 2
+        fname = candidates{i};
+        return;
+    end
+end
+
+error('Cannot find %s. Put the six .ang files in the SDSS 2507_EBSD root folder or next to the script.', fileName);
+
+end
+
+%% =========================================================
+function p = thisFilePathSafe()
+
+p = mfilename('fullpath');
+
+if isempty(p)
+    error('Could not resolve script full path.');
+end
+
+if length(p) < 2 || ~strcmpi(p(end-1:end), '.m')
+    p = [p '.m'];
+end
+
+end
