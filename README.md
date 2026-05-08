@@ -1,4 +1,3 @@
-
 # LPBF-SDSS-ODF-analysis
 
 MATLAB/MTEX scripts and figures for orientation distribution function (ODF) analysis of LPBF-fabricated super duplex stainless steel.
@@ -20,4 +19,4 @@ LPBF-SDSS-ODF-analysis/
 ├── README.md
 ├── figures/
 │   └── ODF_hex_panel.png
-└── MTEX_scripts/
+└── MTEX/
